@@ -2,6 +2,10 @@ name: ci
 on:
   pull_request:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   prettier-check:
     runs-on: ubuntu-latest
@@ -21,6 +25,7 @@ jobs:
         run: ./debug-check.sh
 
       - name: check formatting on diff
+        id: prettier
         shell: bash
         run: |
           set -euo pipefail
@@ -30,12 +35,46 @@ jobs:
           if [[ -n "$FILES" ]]; then
             echo "Checking formatting for:"
             echo "$FILES"
-            if echo "$FILES" | xargs npx prettier --check; then
-              echo "✅ All files are properly formatted"
-            else
+            UNFORMATTED=$(echo "$FILES" | xargs npx prettier --list-different || true)
+            if [[ -n "$UNFORMATTED" ]]; then
+              echo "unformatted<<EOF" >> "$GITHUB_OUTPUT"
+              echo "$UNFORMATTED" >> "$GITHUB_OUTPUT"
+              echo "EOF" >> "$GITHUB_OUTPUT"
               echo "❌ Some files need formatting"
               exit 1
+            else
+              echo "✅ All files are properly formatted"
             fi
           else
             echo "No files need formatting"
           fi
+
+      - name: comment success on PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ CI passed successfully.'
+            })
+
+      - name: comment failure on PR
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          UNFORMATTED_FILES: ${{ steps.prettier.outputs.unformatted }}
+        with:
+          script: |
+            const files = process.env.UNFORMATTED_FILES;
+            const body = files
+              ? `❌ Some files need formatting:\n${files}`
+              : '❌ CI failed. Please check the logs.';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            })
